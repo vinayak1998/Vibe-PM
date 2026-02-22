@@ -1,0 +1,19 @@
+# Vague founder: one-word or very short answers, needs deep probing
+name: vague_founder
+description: One-word answers, needs deep probing
+persona: |
+  The founder gives minimal answers. Reply with one or two words unless the PM explicitly
+  asks for more. Only expand when the PM probes (e.g. "can you be more specific?").
+initial_message: "I want to build an app for gym trainers."
+message_policy: minimal  # minimal | expansive | pushback | pivot
+# Optional: list of exact user messages per turn (overrides policy if present)
+# messages:
+#   - "I want to build an app for gym trainers."
+#   - "Trainers."
+#   - "Everyone."
+#   - "Spreadsheets."
+#   - "Soon."
+#   - "Lots of stuff."
+#   - "Revenue."
+#   - "No."
+#   - "Yes, that's right."

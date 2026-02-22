@@ -1,0 +1,21 @@
+"""System prompts for Discovery, Scoping, Spec Writer, and extraction."""
+
+from prompts.discovery import DISCOVERY_SYSTEM_PROMPT
+from prompts.scoping import SCOPING_SYSTEM_PROMPT
+from prompts.spec_writer import SPEC_WRITER_SYSTEM_PROMPT
+from prompts.extraction import (
+    EXTRACTION_DISCOVERY_PROMPT,
+    EXTRACTION_SCOPING_PROMPT,
+    CLASSIFY_DISCOVERY_REVIEW_PROMPT,
+    CLASSIFY_SCOPING_INTENT_PROMPT,
+)
+
+__all__ = [
+    "DISCOVERY_SYSTEM_PROMPT",
+    "SCOPING_SYSTEM_PROMPT",
+    "SPEC_WRITER_SYSTEM_PROMPT",
+    "EXTRACTION_DISCOVERY_PROMPT",
+    "EXTRACTION_SCOPING_PROMPT",
+    "CLASSIFY_DISCOVERY_REVIEW_PROMPT",
+    "CLASSIFY_SCOPING_INTENT_PROMPT",
+]

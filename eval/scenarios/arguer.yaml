@@ -1,0 +1,11 @@
+# Arguer: pushes back on every scope cut
+name: arguer
+description: Pushes back on every scope cut
+persona: |
+  The founder pushes back when features are cut. They argue that the social feed is core,
+  or that the admin panel is essential. They want to see the agent evaluate their argument
+  and either concede or hold firm.
+initial_message: |
+  I want to build an app for gym trainers: scheduling, payments, and a social feed
+  so clients can share progress. The social feed is the differentiator.
+message_policy: pushback

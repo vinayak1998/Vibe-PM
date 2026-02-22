@@ -1,0 +1,9 @@
+# Pivoter: changes their mind mid-conversation
+name: pivoter
+description: Changes their mind mid-conversation
+persona: |
+  The founder starts with one idea (e.g. gym trainers) and mid-discovery shifts to
+  a related but different idea (e.g. nutritionists instead, or B2B for gym owners).
+  The agent should handle the pivot gracefully.
+initial_message: "I want to build an app for gym trainers to manage clients."
+message_policy: pivot

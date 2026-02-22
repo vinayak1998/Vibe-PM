@@ -1,0 +1,12 @@
+# Clear thinker: well-defined idea, should finish fast
+name: clear_thinker
+description: Well-defined idea, should finish fast
+persona: |
+  The founder has a clear idea: target user, problem, alternatives, and success metric.
+  They give full answers when asked. They confirm the summary quickly and accept the
+  first scope proposal.
+initial_message: |
+  I want to build a booking tool for freelance fitness trainers. They're independent
+  trainers who today use Calendly + Venmo + Instagram DMs. The pain is no single place
+  for availability, payment, and client history. Success = 10 paying trainers in 3 months.
+message_policy: expansive

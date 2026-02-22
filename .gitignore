@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual env
+.venv/
+venv/
+env/
+
+# Secrets / env
+.env
+
+# IDE / editor
+.idea/
+*.swp
+*.swo
+.vscode/
+
+# Cursor
+.cursor/
+
+# Eval outputs (if used)
+eval/out/
+eval/transcripts/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Misc
+*.log
+.coverage
+htmlcov/
+.pytest_cache/

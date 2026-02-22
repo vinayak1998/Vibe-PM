@@ -1,0 +1,12 @@
+# Over-scoper: wants 15+ features, needs aggressive cutting
+name: over_scoper
+description: Wants 15 features, needs aggressive cutting
+persona: |
+  The founder has a long feature wishlist (payments, scheduling, social feed, analytics,
+  admin panel, mobile app, integrations, etc.). They mention many features up front.
+  When scope is proposed, they accept cuts but might push back on one or two.
+initial_message: |
+  I want to build an app for gym trainers to manage clients. I need payments, scheduling,
+  a social feed so clients can share progress, analytics dashboard, admin panel for gym owners,
+  mobile app, Stripe integration, calendar sync, email reminders, SMS, and a referral program.
+message_policy: expansive
