@@ -1,8 +1,14 @@
 """Automated eval runner: run test conversations, collect transcripts, optional scoring."""
 
 import asyncio
+import json
 import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import List, Optional, Tuple
+
+_DEBUG_LOG = Path("/Users/vinayakrastogi/Desktop/Agents/PM/.cursor/debug-31600c.log")
 
 # Add project root so imports work
 _root = Path(__file__).resolve().parent.parent
@@ -13,9 +19,14 @@ import yaml
 
 from orchestrator import Orchestrator
 from eval.rubric import RUBRIC_DIMENSIONS, get_rubric_text
+from eval.simulated_user import SimulatedUser
 
 
 SCENARIOS_DIR = Path(__file__).resolve().parent / "scenarios"
+TRANSCRIPTS_DIR = Path(__file__).resolve().parent / "transcripts"
+
+# Seconds to wait between turns to avoid Groq free-tier TPM rate limits
+TURN_DELAY_SECONDS = 10
 
 
 def load_scenario(name: str) -> dict:
@@ -27,40 +38,86 @@ def load_scenario(name: str) -> dict:
         return yaml.safe_load(f) or {}
 
 
+def _save_transcript(scenario_name: str, transcript: List[dict], state_dict: dict) -> Path:
+    """Save transcript and state to eval/transcripts/{scenario_name}_{timestamp}.yaml."""
+    TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    path = TRANSCRIPTS_DIR / f"{scenario_name}_{timestamp}.yaml"
+    payload = {"scenario": scenario_name, "transcript": transcript, "final_state": state_dict}
+    with open(path, "w") as f:
+        yaml.dump(payload, f, default_flow_style=False, allow_unicode=True)
+    return path
+
+
 async def run_conversation(
     scenario_name: str,
-    user_messages: list[str] | None = None,
-    max_turns: int = 50,
-) -> tuple[list[dict], dict]:
+    user_messages: Optional[List[str]] = None,
+    max_turns: int = 30,
+) -> Tuple[List[dict], dict]:
     """
     Run a single conversation with the orchestrator.
     If user_messages is provided, use those in order (and stop when exhausted).
-    Otherwise use scenario initial_message only and then auto-respond (not implemented here).
+    Otherwise use scenario initial_message and an LLM-simulated user that generates
+    the next message each turn until phase is 'done' or max_turns (30) is reached.
     Returns (transcript, final_state_dict).
     """
     orchestrator = Orchestrator()
     transcript = []
 
-    if user_messages is None:
+    if user_messages is not None:
+        # Fixed message list (manual override)
+        for i, user_msg in enumerate(user_messages):
+            if i >= max_turns:
+                break
+            try:
+                response, state = await orchestrator.handle_message(user_msg)
+            except Exception as e:
+                transcript.append({"user": user_msg, "assistant": f"[ERROR: {e}]", "phase": "error"})
+                break
+            transcript.append({
+                "user": user_msg,
+                "assistant": response[:2000] + ("..." if len(response) > 2000 else ""),
+                "phase": state.phase,
+            })
+            if state.phase == "done":
+                break
+    else:
+        # Simulated user: loop send user -> get agent -> generate next user until done or max_turns
         scenario = load_scenario(scenario_name)
-        # Use full message sequence if provided; otherwise single initial message
-        user_messages = scenario.get("messages") or [scenario.get("initial_message", "I have a product idea.")]
-
-    for i, user_msg in enumerate(user_messages):
-        if i >= max_turns:
-            break
-        try:
-            response, state = await orchestrator.handle_message(user_msg)
-        except Exception as e:
-            transcript.append({"user": user_msg, "assistant": f"[ERROR: {e}]", "phase": "error"})
-            break
-        transcript.append({
-            "user": user_msg,
-            "assistant": response[:2000] + ("..." if len(response) > 2000 else ""),
-            "phase": state.phase,
-        })
-        if state.phase == "done":
-            break
+        initial_message = scenario.get("initial_message", "I have a product idea.")
+        if isinstance(initial_message, list):
+            initial_message = initial_message[0] if initial_message else "I have a product idea."
+        simulator = SimulatedUser(
+            persona=scenario.get("persona", "You are a founder with a product idea."),
+            message_policy=scenario.get("message_policy", "expansive"),
+        )
+        user_msg = initial_message
+        for turn_i in range(max_turns):
+            if turn_i > 0:
+                await asyncio.sleep(TURN_DELAY_SECONDS)
+            try:
+                response, state = await orchestrator.handle_message(user_msg)
+            except Exception as e:
+                transcript.append({"user": user_msg, "assistant": f"[ERROR: {e}]", "phase": "error"})
+                break
+            transcript.append({
+                "user": user_msg,
+                "assistant": response[:2000] + ("..." if len(response) > 2000 else ""),
+                "phase": state.phase,
+            })
+            if state.phase == "done":
+                break
+            try:
+                user_msg = await simulator.next_message(transcript)
+            except Exception as e:
+                transcript.append({"user": f"[SIM ERROR: {e}]", "assistant": "", "phase": state.phase})
+                break
+            # region agent log
+            _DEBUG_LOG.open("a").write(json.dumps({"sessionId":"31600c","timestamp":int(time.time()*1000),"location":"runner.py:run_conversation","message":"simulated_user_msg","data":{"user_msg_repr":repr(user_msg)[:300],"user_msg_len":len(user_msg),"turn":len(transcript)},"hypothesisId":"C"}) + "\n")
+            # endregion
+            if not user_msg:
+                transcript.append({"user": "[SIMULATED USER RETURNED EMPTY]", "assistant": "", "phase": state.phase})
+                break
 
     # Build state summary for scoring
     state = orchestrator.state
@@ -73,7 +130,7 @@ async def run_conversation(
     return transcript, state_dict
 
 
-def format_transcript(transcript: list[dict]) -> str:
+def format_transcript(transcript: List[dict]) -> str:
     """Format transcript for human or LLM review."""
     lines = []
     for t in transcript:
@@ -90,12 +147,17 @@ async def main():
     print(get_rubric_text())
     print("\n--- Running scenarios ---\n")
 
-    for name in scenario_names:
+    for i, name in enumerate(scenario_names):
+        if i > 0:
+            print(f"(waiting {TURN_DELAY_SECONDS}s between scenarios for rate limits)\n")
+            await asyncio.sleep(TURN_DELAY_SECONDS)
         print(f"=== Scenario: {name} ===\n")
         try:
             transcript, state_dict = await run_conversation(name)
             print(format_transcript(transcript))
-            print(f"Final phase: {state_dict['phase']}, spec length: {state_dict['spec_length']}\n")
+            print(f"Final phase: {state_dict['phase']}, spec length: {state_dict['spec_length']}")
+            saved = _save_transcript(name, transcript, state_dict)
+            print(f"Transcript saved: {saved}\n")
         except Exception as e:
             print(f"Error: {e}\n")
             import traceback
