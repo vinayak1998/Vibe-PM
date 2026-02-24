@@ -1,12 +1,8 @@
 """LLM-as-User simulator for eval: roleplays founder from scenario persona and message_policy."""
 
-import json
 import sys
-import time
 from pathlib import Path
 from typing import Any, Dict, List
-
-_DEBUG_LOG = Path("/Users/vinayakrastogi/Desktop/Agents/PM/.cursor/debug-31600c.log")
 
 # Add project root so imports work
 _root = Path(__file__).resolve().parent.parent
@@ -28,9 +24,11 @@ POLICY_INSTRUCTIONS = {
         "who is cooperative."
     ),
     "pushback": (
-        "When the PM proposes cutting features, push back. Argue that certain features "
-        "(e.g. social feed, admin panel) are core or essential. Want to see the agent "
-        "evaluate your argument and either concede or hold firm. Stay in character."
+        "During discovery, answer questions normally and cooperatively — give helpful, "
+        "detailed responses. Once the PM proposes a scope or cuts features, push back hard. "
+        "Argue that certain features (e.g. social feed, admin panel) are core differentiators "
+        "or that investors expect them. Give specific reasons like 'the social feed IS the "
+        "differentiator' or 'investors expect an admin panel'. Stay in character."
     ),
     "pivot": (
         "Start with the initial idea. After about 3-4 exchanges, shift to a related but "
@@ -53,7 +51,8 @@ def _build_system_prompt(persona: str, message_policy: str) -> str:
         "BEHAVIOR (message policy = {policy}):\n"
         f"{policy_instruction}\n\n"
         "Respond with ONLY the founder's next message—no labels, no meta-commentary. "
-        "One short paragraph or a few sentences max unless the policy says to be very brief."
+        "Keep responses short (1-3 sentences max) to simulate real user behavior, "
+        "unless the policy calls for a detailed or expansive answer."
     ).format(policy=policy)
 
 
@@ -62,7 +61,7 @@ def _conversation_to_messages(conversation: List[Dict[str, Any]]) -> List[Dict[s
 
     Roles are from the simulator's perspective: the PM agent's replies are "user"
     (input) and the founder's prior messages are "assistant" (the simulator's own
-    prior output).  This lets the LLM naturally continue generating as the founder.
+    prior output). This lets the LLM naturally continue generating as the founder.
     """
     messages = []
     for turn in conversation:
@@ -91,11 +90,5 @@ class SimulatedUser:
             raise ValueError("conversation must have at least one turn (user + assistant)")
         messages = [{"role": "system", "content": self._system_prompt}]
         messages.extend(_conversation_to_messages(conversation))
-        # region agent log
-        _DEBUG_LOG.open("a").write(json.dumps({"sessionId":"31600c","timestamp":int(time.time()*1000),"location":"simulated_user.py:next_message","message":"messages_to_llm","data":{"roles":[m["role"] for m in messages],"last_msg_role":messages[-1]["role"],"last_msg_content":messages[-1]["content"][:200],"num_messages":len(messages)},"hypothesisId":"A"}) + "\n")
-        # endregion
-        reply = await llm_call("extraction", messages)
-        # region agent log
-        _DEBUG_LOG.open("a").write(json.dumps({"sessionId":"31600c","timestamp":int(time.time()*1000),"location":"simulated_user.py:next_message","message":"raw_llm_reply","data":{"reply_repr":repr(reply)[:300],"reply_len":len(reply) if reply else 0,"stripped":repr((reply or "").strip())[:300]},"hypothesisId":"B"}) + "\n")
-        # endregion
+        reply = await llm_call("conversation", messages)
         return (reply or "").strip()

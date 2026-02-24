@@ -1,14 +1,10 @@
 """Automated eval runner: run test conversations, collect transcripts, optional scoring."""
 
 import asyncio
-import json
 import sys
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
-
-_DEBUG_LOG = Path("/Users/vinayakrastogi/Desktop/Agents/PM/.cursor/debug-31600c.log")
 
 # Add project root so imports work
 _root = Path(__file__).resolve().parent.parent
@@ -26,7 +22,7 @@ SCENARIOS_DIR = Path(__file__).resolve().parent / "scenarios"
 TRANSCRIPTS_DIR = Path(__file__).resolve().parent / "transcripts"
 
 # Seconds to wait between turns to avoid Groq free-tier TPM rate limits
-TURN_DELAY_SECONDS = 10
+TURN_DELAY_SECONDS = 20
 
 
 def load_scenario(name: str) -> dict:
@@ -47,6 +43,16 @@ def _save_transcript(scenario_name: str, transcript: List[dict], state_dict: dic
     with open(path, "w") as f:
         yaml.dump(payload, f, default_flow_style=False, allow_unicode=True)
     return path
+
+
+def _phases_visited(transcript: List[dict]) -> List[str]:
+    """Return deduplicated ordered list of phases seen across the transcript."""
+    seen = []
+    for turn in transcript:
+        phase = turn.get("phase")
+        if phase and (not seen or seen[-1] != phase):
+            seen.append(phase)
+    return seen
 
 
 async def run_conversation(
@@ -112,9 +118,6 @@ async def run_conversation(
             except Exception as e:
                 transcript.append({"user": f"[SIM ERROR: {e}]", "assistant": "", "phase": state.phase})
                 break
-            # region agent log
-            _DEBUG_LOG.open("a").write(json.dumps({"sessionId":"31600c","timestamp":int(time.time()*1000),"location":"runner.py:run_conversation","message":"simulated_user_msg","data":{"user_msg_repr":repr(user_msg)[:300],"user_msg_len":len(user_msg),"turn":len(transcript)},"hypothesisId":"C"}) + "\n")
-            # endregion
             if not user_msg:
                 transcript.append({"user": "[SIMULATED USER RETURNED EMPTY]", "assistant": "", "phase": state.phase})
                 break
@@ -123,6 +126,9 @@ async def run_conversation(
     state = orchestrator.state
     state_dict = {
         "phase": state.phase,
+        "reached_done": state.phase == "done",
+        "turn_count": len(transcript),
+        "phases_visited": _phases_visited(transcript),
         "discovery_summary": state.discovery_summary.model_dump() if state.discovery_summary else {},
         "scoping_output": state.scoping_output.model_dump() if state.scoping_output else None,
         "spec_length": len(state.spec_markdown or ""),
@@ -155,7 +161,13 @@ async def main():
         try:
             transcript, state_dict = await run_conversation(name)
             print(format_transcript(transcript))
-            print(f"Final phase: {state_dict['phase']}, spec length: {state_dict['spec_length']}")
+            print(
+                f"Final phase: {state_dict['phase']} | "
+                f"reached_done: {state_dict['reached_done']} | "
+                f"turns: {state_dict['turn_count']} | "
+                f"phases: {state_dict['phases_visited']} | "
+                f"spec length: {state_dict['spec_length']}"
+            )
             saved = _save_transcript(name, transcript, state_dict)
             print(f"Transcript saved: {saved}\n")
         except Exception as e:
