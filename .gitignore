@@ -38,4 +38,6 @@ Thumbs.db
 .coverage
 htmlcov/
 .pytest_cache/
+
+
 Project Context.md
