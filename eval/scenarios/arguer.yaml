@@ -1,6 +1,6 @@
 # Arguer: pushes back on every scope cut
 name: arguer
-description: Pushes back on every scope cut
+description: Pushes back on every scope cut. Also gives at least one pushback on the initial discovery summary.
 persona: |
   The founder pushes back when features are cut. They argue that the social feed is core,
   or that the admin panel is essential. They want to see the agent evaluate their argument

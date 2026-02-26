@@ -28,6 +28,7 @@ env/
 # Eval outputs (if used)
 eval/out/
 eval/transcripts/
+eval/reports/
 
 # OS
 .DS_Store

@@ -17,6 +17,7 @@ from orchestrator import Orchestrator
 from eval.rubric import RUBRIC_DIMENSIONS, get_rubric_text
 from eval.simulated_user import SimulatedUser
 from eval.assertions import run_assertions, print_checklist
+from eval.report import generate_report
 
 
 SCENARIOS_DIR = Path(__file__).resolve().parent / "scenarios"
@@ -35,11 +36,16 @@ def load_scenario(name: str) -> dict:
         return yaml.safe_load(f) or {}
 
 
-def _save_transcript(scenario_name: str, transcript: List[dict], state_dict: dict) -> Path:
+def _save_transcript(
+    scenario_name: str,
+    transcript: List[dict],
+    state_dict: dict,
+    run_ts: Optional[datetime] = None,
+) -> Path:
     """Save transcript and state to eval/transcripts/{scenario_name}_{timestamp}.yaml."""
     TRANSCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    path = TRANSCRIPTS_DIR / f"{scenario_name}_{timestamp}.yaml"
+    ts = (run_ts or datetime.now(timezone.utc)).strftime("%Y%m%d_%H%M%S")
+    path = TRANSCRIPTS_DIR / f"{scenario_name}_{ts}.yaml"
     payload = {"scenario": scenario_name, "transcript": transcript, "final_state": state_dict}
     with open(path, "w") as f:
         yaml.dump(payload, f, default_flow_style=False, allow_unicode=True)
@@ -151,8 +157,11 @@ def format_transcript(transcript: List[dict]) -> str:
 
 
 async def main():
-    """Run all 5 scenarios and print transcripts. No LLM scoring (add separately if needed)."""
+    """Run all 5 scenarios, print results, and write a timestamped markdown report."""
     scenario_names = ["vague_founder", "over_scoper", "clear_thinker", "arguer", "pivoter"]
+    run_timestamp = datetime.now(timezone.utc)
+    scenario_results = []
+
     print(get_rubric_text())
     print("\n--- Running scenarios ---\n")
 
@@ -171,14 +180,31 @@ async def main():
                 f"phases: {state_dict['phases_visited']} | "
                 f"spec length: {state_dict['spec_length']}"
             )
-            saved = _save_transcript(name, transcript, state_dict)
+            saved = _save_transcript(name, transcript, state_dict, run_ts=run_timestamp)
             print(f"Transcript saved: {saved}\n")
             results = run_assertions(name, transcript, state_dict)
             print_checklist(name, results)
+            scenario_results.append({
+                "scenario": name,
+                "state_dict": state_dict,
+                "assertions": results,
+                "transcript_path": saved,
+                "error": None,
+            })
         except Exception as e:
             print(f"Error: {e}\n")
             import traceback
             traceback.print_exc()
+            scenario_results.append({
+                "scenario": name,
+                "state_dict": {},
+                "assertions": [],
+                "transcript_path": None,
+                "error": str(e),
+            })
+
+    report_path = generate_report(scenario_results, run_timestamp)
+    print(f"\nEval report written: {report_path}")
 
 
 if __name__ == "__main__":
