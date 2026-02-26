@@ -16,6 +16,7 @@ import yaml
 from orchestrator import Orchestrator
 from eval.rubric import RUBRIC_DIMENSIONS, get_rubric_text
 from eval.simulated_user import SimulatedUser
+from eval.assertions import run_assertions, print_checklist
 
 
 SCENARIOS_DIR = Path(__file__).resolve().parent / "scenarios"
@@ -132,6 +133,8 @@ async def run_conversation(
         "discovery_summary": state.discovery_summary.model_dump() if state.discovery_summary else {},
         "scoping_output": state.scoping_output.model_dump() if state.scoping_output else None,
         "spec_length": len(state.spec_markdown or ""),
+        "spec_markdown": state.spec_markdown or "",
+        "negotiation_rounds": state.negotiation_rounds,
     }
     return transcript, state_dict
 
@@ -170,6 +173,8 @@ async def main():
             )
             saved = _save_transcript(name, transcript, state_dict)
             print(f"Transcript saved: {saved}\n")
+            results = run_assertions(name, transcript, state_dict)
+            print_checklist(name, results)
         except Exception as e:
             print(f"Error: {e}\n")
             import traceback
