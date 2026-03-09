@@ -206,6 +206,8 @@ Reports are saved to `eval/reports/`. Transcripts are saved to `eval/transcripts
 - **Bugs:** Open an issue on GitHub.
 - **PRs:** Welcome. Use branch names like `feature/short-name` or `fix/short-name`. Keep PR titles descriptive. Reference issues with `Fixes #N` where applicable.
 
+**Using AI coding tools?** If you're working with Cursor, Claude Code, Codex, or similar, pass [HIGH_LEVEL_DESIGN.md](HIGH_LEVEL_DESIGN.md) and [LOW_LEVEL_DESIGN.md](LOW_LEVEL_DESIGN.md) as context. Together they cover the full architecture, every schema field, every prompt, every assertion, and every design decision. For the rationale behind specific choices, also include [DECISION_LOG.md](DECISION_LOG.md).
+
 ---
 
 ## License
