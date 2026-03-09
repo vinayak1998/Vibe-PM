@@ -3,7 +3,7 @@
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 # Allow running from project root
 _root = Path(__file__).resolve().parent.parent
@@ -11,8 +11,14 @@ if str(_root) not in sys.path:
     sys.path.insert(0, str(_root))
 
 from eval.assertions import AssertionResult
+from eval.rubric import RUBRIC_DIMENSIONS
+from eval.judge import DIMENSION_LABELS, compute_overall, scores_to_row
 
 REPORTS_DIR = Path(__file__).resolve().parent / "reports"
+RESULTS_MD = Path(__file__).resolve().parent / "results.md"
+
+# Ordered short column names for the comparison table
+_TABLE_COLUMNS = list(DIMENSION_LABELS.values()) + ["overall"]
 
 
 def _ts(dt: datetime) -> str:
@@ -23,7 +29,7 @@ def _ts_human(dt: datetime) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
-def _yesno(value) -> str:
+def _yesno(value) -> bool:
     return "Yes" if value else "No"
 
 
@@ -48,9 +54,77 @@ def _model_metadata() -> str:
         return "unavailable"
 
 
+# ---------------------------------------------------------------------------
+# Layer 3 helpers
+# ---------------------------------------------------------------------------
+
+def _format_score_cell(entry: Optional[dict]) -> str:
+    """Return 'N/5 — snippet' or 'N/A' for a single dimension."""
+    if not entry:
+        return "N/A"
+    score = entry.get("score")
+    if score is None:
+        return "N/A"
+    reasoning = entry.get("reasoning", "")
+    snippet = reasoning[:100].rstrip()
+    if len(reasoning) > 100:
+        snippet += "..."
+    return f"{score}/5 — \"{snippet}\""
+
+
+def _judge_section(scenario_results: List[dict]) -> List[str]:
+    """Render the Layer 3: LLM Judge Scores section."""
+    lines: List[str] = [
+        "## Layer 3: LLM Judge Scores",
+        "",
+        "> Scores are 1-5 per rubric dimension. `N/A` means the dimension was not tested.",
+        "> Reasoning is truncated to 100 chars here; full reasoning in the JSON judge output.",
+        "",
+    ]
+
+    for sr in scenario_results:
+        name = sr["scenario"]
+        scores = sr.get("judge_scores")
+        error = sr.get("error")
+
+        if error:
+            lines.append(f"### {name}")
+            lines.append("")
+            lines.append(f"> **ERROR:** {error}")
+            lines.append("")
+            continue
+
+        if scores is None:
+            lines.append(f"### {name}")
+            lines.append("")
+            lines.append("> Judge not run for this scenario.")
+            lines.append("")
+            continue
+
+        total, max_possible = compute_overall(scores)
+        overall_str = f"{total}/{max_possible}" if max_possible > 0 else "N/A"
+        lines.append(f"### {name} (Overall: {overall_str})")
+        lines.append("")
+
+        for dim in RUBRIC_DIMENSIONS:
+            entry = scores.get(dim, {})
+            label = DIMENSION_LABELS.get(dim, dim)
+            formatted = _format_score_cell(entry)
+            lines.append(f"- **{label}:** {formatted}")
+
+        lines.append("")
+
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# Timestamped report
+# ---------------------------------------------------------------------------
+
 def generate_report(
     scenario_results: List[dict],
     run_timestamp: datetime,
+    use_judge: bool = False,
 ) -> Path:
     """
     Write eval/reports/eval_{timestamp}.md and return the path.
@@ -59,8 +133,9 @@ def generate_report(
         scenario: str
         state_dict: dict
         assertions: List[AssertionResult]
-        transcript_path: Path  (may be None if the scenario errored)
-        error: str | None      (set if the scenario raised an exception)
+        judge_scores: dict | None   (populated when use_judge=True)
+        transcript_path: Path       (may be None if the scenario errored)
+        error: str | None           (set if the scenario raised an exception)
     """
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     report_path = REPORTS_DIR / f"eval_{_ts(run_timestamp)}.md"
@@ -70,12 +145,14 @@ def generate_report(
     # -----------------------------------------------------------------------
     # Header
     # -----------------------------------------------------------------------
+    judge_note = " + LLM Judge" if use_judge else ""
     lines += [
         f"# Eval Report — {_ts_human(run_timestamp)}",
         "",
         "## Run Metadata",
         "",
         f"- **Models:** {_model_metadata()}",
+        f"- **Eval layers:** Layer 2 (assertions){judge_note}",
         f"- **Scenarios run:** {len(scenario_results)}",
         f"- **Timestamp:** {_ts_human(run_timestamp)}",
         "",
@@ -84,12 +161,14 @@ def generate_report(
     # -----------------------------------------------------------------------
     # Summary table
     # -----------------------------------------------------------------------
-    lines += [
-        "## Summary",
-        "",
-        "| Scenario | Assertions | Turns | Reached Done | Spec Length | Transcript |",
-        "|---|---|---|---|---|---|",
-    ]
+    if use_judge:
+        header = "| Scenario | Assertions | Turns | Reached Done | Spec Length | Judge Overall | Transcript |"
+        divider = "|---|---|---|---|---|---|---|"
+    else:
+        header = "| Scenario | Assertions | Turns | Reached Done | Spec Length | Transcript |"
+        divider = "|---|---|---|---|---|---|"
+
+    lines += ["## Summary", "", header, divider]
 
     total_passed = 0
     total_checks = 0
@@ -98,7 +177,10 @@ def generate_report(
         name = sr["scenario"]
         error = sr.get("error")
         if error:
-            lines.append(f"| {name} | ERROR | — | — | — | — |")
+            if use_judge:
+                lines.append(f"| {name} | ERROR | — | — | — | — | — |")
+            else:
+                lines.append(f"| {name} | ERROR | — | — | — | — |")
             continue
 
         state = sr.get("state_dict", {})
@@ -114,14 +196,25 @@ def generate_report(
         tp = sr.get("transcript_path")
         transcript_link = f"[transcript]({tp.name})" if tp else "—"
 
-        lines.append(
-            f"| {name} | {passed}/{total} | {turns} | {reached_done} | {spec_length} | {transcript_link} |"
-        )
+        if use_judge:
+            scores = sr.get("judge_scores")
+            if scores:
+                tot, mx = compute_overall(scores)
+                overall_str = f"{tot}/{mx}" if mx > 0 else "N/A"
+            else:
+                overall_str = "—"
+            lines.append(
+                f"| {name} | {passed}/{total} | {turns} | {reached_done} | {spec_length} | {overall_str} | {transcript_link} |"
+            )
+        else:
+            lines.append(
+                f"| {name} | {passed}/{total} | {turns} | {reached_done} | {spec_length} | {transcript_link} |"
+            )
 
-    # Totals row
-    lines.append(
-        f"| **Total** | **{total_passed}/{total_checks}** | | | | |"
-    )
+    if use_judge:
+        lines.append(f"| **Total** | **{total_passed}/{total_checks}** | | | | | |")
+    else:
+        lines.append(f"| **Total** | **{total_passed}/{total_checks}** | | | | |")
     lines.append("")
 
     # -----------------------------------------------------------------------
@@ -155,14 +248,100 @@ def generate_report(
         lines.append("")
 
     # -----------------------------------------------------------------------
-    # Footer placeholder for future layers
+    # Layer 3: LLM Judge Scores (only when judge was run)
     # -----------------------------------------------------------------------
-    lines += [
-        "---",
-        "",
-        "*Generated by eval/report.py — add Layer 3+ sections here as new eval layers are introduced.*",
-        "",
-    ]
+    if use_judge:
+        lines += _judge_section(scenario_results)
+        lines += ["---", ""]
+    else:
+        lines += [
+            "---",
+            "",
+            "*Layer 3 (LLM Judge) not run. Re-run with `--judge` to enable.*",
+            "",
+        ]
 
     report_path.write_text("\n".join(lines), encoding="utf-8")
     return report_path
+
+
+# ---------------------------------------------------------------------------
+# results.md — latest-run comparison table
+# ---------------------------------------------------------------------------
+
+def generate_results_md(
+    scenario_results: List[dict],
+    run_timestamp: datetime,
+) -> Path:
+    """
+    Write (overwrite) eval/results.md with a cross-scenario comparison table.
+    Called after a --judge run. Returns the path written.
+    """
+    lines: List[str] = [
+        "# Eval Results — Latest Run",
+        "",
+        f"*Generated: {_ts_human(run_timestamp)}*  ",
+        f"*Models: {_model_metadata()}*",
+        "",
+        "Columns: assertions pass rate + LLM judge scores (1-5) per dimension + overall.",
+        "N/A = dimension not tested in that scenario.",
+        "",
+    ]
+
+    # Table header
+    col_headers = ["Scenario", "Assertions"] + [c.replace("_", " ") for c in _TABLE_COLUMNS]
+    lines.append("| " + " | ".join(col_headers) + " |")
+    lines.append("| " + " | ".join(["---"] * len(col_headers)) + " |")
+
+    for sr in scenario_results:
+        name = sr["scenario"]
+        error = sr.get("error")
+
+        if error:
+            row_cells = [name, "ERROR"] + ["—"] * len(_TABLE_COLUMNS)
+            lines.append("| " + " | ".join(row_cells) + " |")
+            continue
+
+        assertions: List[AssertionResult] = sr.get("assertions", [])
+        passed = sum(1 for a in assertions if a.passed)
+        total = len(assertions)
+        assertion_str = f"{passed}/{total}"
+
+        scores = sr.get("judge_scores")
+        score_row = scores_to_row(scores)  # {label: display_str}
+
+        row_cells = (
+            [name, assertion_str]
+            + [score_row.get(col, "—") for col in _TABLE_COLUMNS]
+        )
+        lines.append("| " + " | ".join(row_cells) + " |")
+
+    lines += [
+        "",
+        "---",
+        "",
+        "## Score Dimension Reference",
+        "",
+        "| Dimension | Column | What it measures |",
+        "|---|---|---|",
+    ]
+
+    from eval.rubric import RUBRIC_DESCRIPTIONS
+    for dim, label in DIMENSION_LABELS.items():
+        desc = RUBRIC_DESCRIPTIONS.get(dim, "")
+        # Truncate for table
+        short_desc = desc[:120].rstrip()
+        if len(desc) > 120:
+            short_desc += "..."
+        lines.append(f"| {dim} | {label} | {short_desc} |")
+
+    lines += [
+        "",
+        "---",
+        "",
+        f"*Full per-scenario reports with detailed reasoning: [eval/reports/](reports/)*",
+        "",
+    ]
+
+    RESULTS_MD.write_text("\n".join(lines), encoding="utf-8")
+    return RESULTS_MD

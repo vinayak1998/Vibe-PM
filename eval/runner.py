@@ -1,5 +1,6 @@
 """Automated eval runner: run test conversations, collect transcripts, optional scoring."""
 
+import argparse
 import asyncio
 import sys
 from datetime import datetime, timezone
@@ -17,7 +18,8 @@ from orchestrator import Orchestrator
 from eval.rubric import RUBRIC_DIMENSIONS, get_rubric_text
 from eval.simulated_user import SimulatedUser
 from eval.assertions import run_assertions, print_checklist
-from eval.report import generate_report
+from eval.judge import judge_transcript, format_judge_scores
+from eval.report import generate_report, generate_results_md
 
 
 SCENARIOS_DIR = Path(__file__).resolve().parent / "scenarios"
@@ -156,41 +158,87 @@ def format_transcript(transcript: List[dict]) -> str:
     return "\n".join(lines)
 
 
-async def main():
-    """Run all 5 scenarios, print results, and write a timestamped markdown report."""
+def _print_scenario_header(name: str, state_dict: dict) -> None:
+    print(
+        f"Turns: {state_dict['turn_count']} | "
+        f"Final phase: {state_dict['phase']} | "
+        f"Spec length: {state_dict['spec_length']}"
+    )
+    print(f"Phases: {state_dict['phases_visited']}\n")
+
+
+async def main() -> None:
+    """Run all 5 scenarios, print results, and write timestamped report + results.md."""
+    parser = argparse.ArgumentParser(
+        description="AI PM Eval Runner",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  python eval/runner.py            # assertions only (fast, free)\n"
+            "  python eval/runner.py --judge    # full eval with LLM scoring\n"
+        ),
+    )
+    parser.add_argument(
+        "--judge",
+        action="store_true",
+        default=False,
+        help="Run LLM-as-Judge scoring after assertions (uses 70B model, slower)",
+    )
+    args = parser.parse_args()
+    use_judge = args.judge
+
     scenario_names = ["vague_founder", "over_scoper", "clear_thinker", "arguer", "pivoter"]
     run_timestamp = datetime.now(timezone.utc)
     scenario_results = []
 
     print(get_rubric_text())
-    print("\n--- Running scenarios ---\n")
+    mode_label = "FULL (assertions + LLM judge)" if use_judge else "FAST (assertions only)"
+    print(f"\n--- Running scenarios [{mode_label}] ---\n")
 
     for i, name in enumerate(scenario_names):
         if i > 0:
             print(f"(waiting {TURN_DELAY_SECONDS}s between scenarios for rate limits)\n")
             await asyncio.sleep(TURN_DELAY_SECONDS)
+
         print(f"=== Scenario: {name} ===\n")
+        judge_scores = None
+
         try:
             transcript, state_dict = await run_conversation(name)
             print(format_transcript(transcript))
-            print(
-                f"Final phase: {state_dict['phase']} | "
-                f"reached_done: {state_dict['reached_done']} | "
-                f"turns: {state_dict['turn_count']} | "
-                f"phases: {state_dict['phases_visited']} | "
-                f"spec length: {state_dict['spec_length']}"
-            )
+            _print_scenario_header(name, state_dict)
+
             saved = _save_transcript(name, transcript, state_dict, run_ts=run_timestamp)
             print(f"Transcript saved: {saved}\n")
+
+            # Layer 2: deterministic assertions
             results = run_assertions(name, transcript, state_dict)
             print_checklist(name, results)
+
+            # Layer 3: LLM judge (optional)
+            if use_judge:
+                print(f"(waiting {TURN_DELAY_SECONDS}s before judge call for rate limits)")
+                await asyncio.sleep(TURN_DELAY_SECONDS)
+                print("Running LLM judge...")
+                scenario = load_scenario(name)
+                transcript_text = format_transcript(transcript)
+                try:
+                    judge_scores = await judge_transcript(transcript_text, scenario, state_dict)
+                    print(format_judge_scores(judge_scores))
+                except Exception as e:
+                    print(f"[JUDGE ERROR] {e}")
+                    judge_scores = None
+                print()
+
             scenario_results.append({
                 "scenario": name,
                 "state_dict": state_dict,
                 "assertions": results,
+                "judge_scores": judge_scores,
                 "transcript_path": saved,
                 "error": None,
             })
+
         except Exception as e:
             print(f"Error: {e}\n")
             import traceback
@@ -199,12 +247,19 @@ async def main():
                 "scenario": name,
                 "state_dict": {},
                 "assertions": [],
+                "judge_scores": None,
                 "transcript_path": None,
                 "error": str(e),
             })
 
-    report_path = generate_report(scenario_results, run_timestamp)
+    # Write timestamped report
+    report_path = generate_report(scenario_results, run_timestamp, use_judge=use_judge)
     print(f"\nEval report written: {report_path}")
+
+    # Write/overwrite results.md if judge was run
+    if use_judge:
+        results_path = generate_results_md(scenario_results, run_timestamp)
+        print(f"Results summary written: {results_path}")
 
 
 if __name__ == "__main__":
