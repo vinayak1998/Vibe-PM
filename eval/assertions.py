@@ -1,5 +1,6 @@
 """Layer 2 eval: deterministic pass/fail assertions on transcript and final state."""
 
+import re
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -30,6 +31,12 @@ _SOCIAL_KEYWORDS = ("social", "analytics", "admin", "dashboard")
 
 _SPEC_HEADERS = ("## problem", "## mvp", "## core", "## user", "## feature", "## open")
 
+# Strings that the LLM outputs as placeholders for "not filled" — treated as empty
+_NULL_STRINGS = frozenset({
+    "null", "none", "n/a", "not specified", "not stated", "not provided",
+    "tbd", "unknown", "unspecified",
+})
+
 
 def _turns_in_phase(transcript: List[dict], phase: str) -> int:
     return sum(1 for t in transcript if t.get("phase") == phase)
@@ -45,11 +52,26 @@ def _has_error_turn(transcript: List[dict]) -> bool:
     return False
 
 
+def _has_sim_error_turn(transcript: List[dict]) -> List[int]:
+    """Return list of turn indices where the simulated user hit an error."""
+    return [
+        i for i, t in enumerate(transcript)
+        if isinstance(t.get("user"), str) and "[SIM ERROR" in t["user"]
+    ]
+
+
 def _nonempty(value) -> bool:
-    """True if value is a non-empty string or non-empty list."""
+    """True if value is a non-empty, non-placeholder string or non-empty list.
+
+    Rejects literal strings like 'null', 'none', 'n/a', 'tbd', etc. that the
+    LLM extraction model outputs when a field wasn't covered in the conversation.
+    """
     if isinstance(value, list):
         return len(value) > 0
-    return bool(value and str(value).strip())
+    if not value:
+        return False
+    s = str(value).strip().lower()
+    return bool(s) and s not in _NULL_STRINGS
 
 
 def _discovery_fill_count(discovery: dict) -> int:
@@ -97,8 +119,11 @@ def universal_assertions(transcript: List[dict], state_dict: dict) -> List[Asser
         detail="" if spec_ok else "spec_markdown is empty or missing",
     ))
 
-    # all_phases_visited (discovery → scoping → spec, in order)
-    required = ["discovery", "scoping", "spec"]
+    # all_phases_visited (discovery → scoping → done, in order)
+    # NOTE: the 'spec' phase is transient — the orchestrator chains SpecWriterAgent
+    # immediately when scoping sets phase='spec', so it never appears in per-turn
+    # transcripts. The observable sequence is always discovery → scoping → done.
+    required = ["discovery", "scoping", "done"]
     all_present = all(p in phases for p in required)
     if all_present:
         indices = [phases.index(p) for p in required]
@@ -112,12 +137,24 @@ def universal_assertions(transcript: List[dict], state_dict: dict) -> List[Asser
         detail="" if phases_ok else f"phases seen: {phases}",
     ))
 
-    # no_errors
+    # no_errors — checks assistant messages and phase=error turns
     no_errors = not _has_error_turn(transcript)
     results.append(AssertionResult(
         name="no_errors",
         passed=no_errors,
         detail="" if no_errors else "at least one turn has phase=error or [ERROR in assistant text",
+    ))
+
+    # no_sim_errors — checks user messages for SIM ERROR (rate-limit crashes etc.)
+    sim_error_turns = _has_sim_error_turn(transcript)
+    no_sim_err = len(sim_error_turns) == 0
+    results.append(AssertionResult(
+        name="no_sim_errors",
+        passed=no_sim_err,
+        detail=(
+            "" if no_sim_err
+            else f"simulated user error at turn(s) {sim_error_turns}"
+        ),
     ))
 
     # ------------------------------------------------------------------
@@ -197,6 +234,21 @@ def universal_assertions(transcript: List[dict], state_dict: dict) -> List[Asser
         detail="" if has_p0 else "no P0 features found in scoping_output.mvp_features",
     ))
 
+    # rice_scores_present — all P0 features must have a non-null RICE score
+    rice_null_count = sum(
+        1 for f in p0_features
+        if isinstance(f, dict) and f.get("rice_score") is None
+    )
+    rice_ok = rice_null_count == 0
+    results.append(AssertionResult(
+        name="rice_scores_present",
+        passed=rice_ok,
+        detail=(
+            "" if rice_ok
+            else f"{rice_null_count} P0 feature(s) have null RICE scores"
+        ),
+    ))
+
     # has_cut_features (universal floor: >= 1)
     has_cuts = len(cut_features) >= 1
     results.append(AssertionResult(
@@ -243,13 +295,35 @@ def universal_assertions(transcript: List[dict], state_dict: dict) -> List[Asser
         detail="" if has_flow else "scoping_output.core_user_flow is empty",
     ))
 
+    # phase1_within_4_weeks — Phase 1 upper-bound estimate must be <= 4 weeks
+    phases_list = scoping.get("implementation_phases") or []
+    phase1 = phases_list[0] if phases_list else {}
+    est_weeks_raw = str(phase1.get("estimated_weeks", ""))
+    week_numbers = re.findall(r"(\d+)", est_weeks_raw)
+    upper_bound = int(week_numbers[-1]) if week_numbers else 0
+    phase1_ok = 0 < upper_bound <= 4
+    results.append(AssertionResult(
+        name="phase1_within_4_weeks",
+        passed=phase1_ok,
+        detail=(
+            "" if phase1_ok
+            else (
+                f"Phase 1 estimated at '{est_weeks_raw}' — upper bound {upper_bound} exceeds 4 weeks"
+                if upper_bound > 0
+                else "Phase 1 has no estimated_weeks or no scoping_output"
+            )
+        ),
+    ))
+
     # ------------------------------------------------------------------
     # Spec quality
     # ------------------------------------------------------------------
 
+    spec_lower = spec.lower()
+
     # spec_no_hallucination_check — target_user string should appear in spec
     if _nonempty(target_user) and _nonempty(spec):
-        spec_contains_user = target_user.strip().lower()[:40] in spec.lower()
+        spec_contains_user = target_user.strip().lower()[:40] in spec_lower
         results.append(AssertionResult(
             name="spec_no_hallucination_check",
             passed=spec_contains_user,
@@ -268,7 +342,6 @@ def universal_assertions(transcript: List[dict], state_dict: dict) -> List[Asser
         ))
 
     # spec_has_sections — at least 2 expected ## headers present
-    spec_lower = spec.lower()
     matched_headers = [h for h in _SPEC_HEADERS if h in spec_lower]
     sections_ok = len(matched_headers) >= 2
     results.append(AssertionResult(
@@ -289,6 +362,24 @@ def universal_assertions(transcript: List[dict], state_dict: dict) -> List[Asser
         passed=tbd_ok,
         detail="" if tbd_ok else f"{tbd_count} TBD(s) in spec — expected <= 3",
     ))
+
+    # spec_problem_statement_filled — ## Problem Statement must not be a TBD placeholder
+    if _nonempty(spec):
+        ps_idx = spec_lower.find("## problem")
+        if ps_idx >= 0:
+            ps_section = spec_lower[ps_idx:ps_idx + 300]
+            ps_filled = "tbd" not in ps_section
+        else:
+            ps_filled = False
+        results.append(AssertionResult(
+            name="spec_problem_statement_filled",
+            passed=ps_filled,
+            detail=(
+                "" if ps_filled
+                else "## Problem Statement section contains TBD or is missing from spec"
+            ),
+        ))
+    # If spec is empty, spec_generated already catches it — skip to avoid double-counting
 
     return results
 

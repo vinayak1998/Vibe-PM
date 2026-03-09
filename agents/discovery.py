@@ -56,6 +56,11 @@ def _is_structured_output(reply: str) -> bool:
     return False
 
 
+def _has_multi_question(reply: str) -> bool:
+    """True if reply contains 2+ question marks — likely asking multiple questions at once."""
+    return reply.count("?") >= 2
+
+
 async def _merge_extracted_into_summary(state: ConversationState, conv_text: str) -> None:
     """Extract from conversation and merge into state.discovery_summary."""
     extracted = await extract_discovery_summary(conv_text)
@@ -123,6 +128,9 @@ class DiscoveryAgent(BaseAgent):
         if _is_structured_output(reply):
             reply = await self._retry_conversational(conv, system)
 
+        if _has_multi_question(reply):
+            reply = await self._retry_single_question(conv, system)
+
         state.messages.append({"role": "assistant", "content": reply})
         return reply, state
 
@@ -140,5 +148,14 @@ class DiscoveryAgent(BaseAgent):
             "\n\nIMPORTANT: Reply only in natural conversation. "
             "Do NOT output tables, feature lists, or PRD-style documents. "
             "One short paragraph and one question max."
+        )
+        return await self._llm_conversation(conv, system + corrective)
+
+    async def _retry_single_question(self, conv: list[dict], system: str) -> str:
+        """Retry with corrective prompt when LLM asked multiple questions at once."""
+        corrective = (
+            "\n\nIMPORTANT: Your last reply asked multiple questions. "
+            "Ask ONLY ONE question — the single most important one right now. "
+            "One short paragraph max. Do not combine or list questions."
         )
         return await self._llm_conversation(conv, system + corrective)

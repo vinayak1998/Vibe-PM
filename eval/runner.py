@@ -3,9 +3,14 @@
 import argparse
 import asyncio
 import sys
+import warnings
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Optional, Tuple
+
+# Suppress noisy asyncio SSL/transport ResourceWarnings from litellm/httpx
+# that fire when the event loop closes before HTTP sessions are fully torn down.
+warnings.filterwarnings("ignore", category=ResourceWarning)
 
 # Add project root so imports work
 _root = Path(__file__).resolve().parent.parent
@@ -122,6 +127,10 @@ async def run_conversation(
             })
             if state.phase == "done":
                 break
+            # Wait before the simulator call — it uses the same TPM budget as the
+            # orchestrator. Without this delay, back-to-back calls (especially
+            # during multi-round negotiations) exhaust the per-minute token limit.
+            await asyncio.sleep(TURN_DELAY_SECONDS)
             try:
                 user_msg = await simulator.next_message(transcript)
             except Exception as e:
@@ -260,6 +269,10 @@ async def main() -> None:
     if use_judge:
         results_path = generate_results_md(scenario_results, run_timestamp)
         print(f"Results summary written: {results_path}")
+
+    # Allow pending asyncio callbacks (SSL/transport teardowns from litellm/httpx)
+    # to complete before the event loop closes, preventing noisy ResourceWarnings.
+    await asyncio.sleep(0.5)
 
 
 if __name__ == "__main__":
